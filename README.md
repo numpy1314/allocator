@@ -1,72 +1,72 @@
-# allocator
+### 项目概述
 
-[![Build Status](https://github.com/arceos-org/allocator/actions/workflows/ci.yml/badge.svg)](https://github.com/arceos-org/allocator/actions)
-[![crates.io](https://img.shields.io/crates/v/allocator.svg)](https://crates.io/crates/allocator)
-[![docs.rs](https://img.shields.io/docsrs/allocator)](https://docs.rs/allocator)
-[![License](https://img.shields.io/crates/l/allocator)](https://github.com/arceos-org/allocator/blob/main/LICENSE)
+该项目实现了多种内存分配算法，通过统一的接口将这些算法封装起来，方便开发者根据不同的需求选择合适的分配器。项目支持多种特性开关，可根据需要启用不同的分配器。
 
+### 项目结构和模块
 
-**A multi-algorithm memory allocator library with unified interfaces**​​, supporting page-level, byte-level memory allocation and unique ID allocation. Designed for scenarios requiring custom memory management like OS kernels and embedded systems.
+- **`src/lib.rs`**: 项目的核心文件，定义了统一的分配器接口，包括`BaseAllocator`、字节粒度分配器、页粒度分配器和唯一 ID 分配器的接口。同时，提供了一些辅助函数，如地址对齐和检查对齐的函数。此外，还实现了 `AllocatorRc` 结构体，用于将字节分配器包装成 `core::alloc::Allocator` 类型。
+- **`src/bitmap.rs`**: 实现了基于位图的页粒度内存分配器 `BitmapPageAllocator`。使用位图来跟踪每个页面的分配状态，支持不同大小的内存范围。
+- **`src/buddy.rs`**: 实现了基于伙伴系统的字节粒度内存分配器 `BuddyByteAllocator`。使用 `buddy_system_allocator` 库来管理内存。
+- **`src/slab.rs`**: 实现了基于 slab 分配器的字节粒度内存分配器 `SlabByteAllocator`。使用 `slab_allocator` 库来管理内存。
+- **`src/tlsf.rs`**: 实现了基于 TLSF（Two-Level Segregated Fit）算法的字节粒度内存分配器 `TlsfByteAllocator`。使用 `rlsf` 库来管理内存。
 
-## Core Features
-- **Multi-algorithm Support​**​: Implements classic allocation algorithms including Bitmap (page-level), TLSF, Slab, and Buddy
-​- **​Unified Interface**​​: Defines common operations through ByteAllocator/PageAllocator/IdAllocator traits
-- **​​Configurability​**​: Flexible algorithm and memory capacity selection via Cargo features (e.g., page-alloc-1t supports 1TB page-level memory)
-​​- **Standard Library Integration**​​: Supports core::alloc::Allocator trait for direct use with Vec/BTreeMap containers
+### Feature
 
-## Example
-### Example 1：TLSF Byte Allocator (General Memory Management)
-```rust
-use allocator::TlsfByteAllocator;
-use core::alloc::Layout;
+#### 项目中通过 `cfg` 特性开关来控制不同模块和功能的编译，以下是所有可用的特性开关及其作用
 
-// Initialize TLSF allocator managing 1MB memory (starting at 0x100000)
-let mut allocator = TlsfByteAllocator::new();
-allocator.init(0x100000, 1024 * 1024);  // init(start_addr, size)
+##### 1. **`bitmap`**
 
-// Allocate 1024 bytes with 16-byte alignment
-let layout = Layout::from_size_align(1024, 16).unwrap();
-let ptr = allocator.alloc(layout).expect("分配失败");
+- **作用**：启用基于位图的页粒度内存分配器。
+- **关联模块**：`bitmap.rs`
+- **导出类型**：`BitmapPageAllocator`
+- **功能**：使用位图数据结构管理页级内存分配，适合管理大块连续内存区域。
 
-// Simulate memory usage (write data to starting address)
-unsafe { ptr.as_ptr().cast::<u32>().write(0xdead_beef) };
+##### 2. **`buddy`**
 
-// Deallocate memory
-allocator.dealloc(ptr, layout);
-```
+- **作用**：启用基于伙伴系统的字节粒度内存分配器。
+- **关联模块**：`buddy.rs`
+- **导出类型**：`BuddyByteAllocator`
+- **功能**：基于伙伴系统算法实现细粒度内存分配，适合需要处理不同大小内存块的场景。
 
-### Example 2: Bitmap Page Allocator (Kernel Page Management)
-```rust
-use allocator::BitmapPageAllocator;
+##### 3. **`slab`**
 
-// Define page size as 4KB (common kernel page size)
-const PAGE_SIZE: usize = 4096;
-let mut allocator = BitmapPageAllocator::<PAGE_SIZE>::new();
+- **作用**：启用基于 slab 分配器的字节粒度内存分配器。
+- **关联模块**：`slab.rs`
+- **导出类型**：`SlabByteAllocator`
+- **功能**：针对特定大小对象的高效分配，减少内部碎片，适合频繁分配 / 释放相同大小对象的场景。
 
-// Initialize: Manage 2GB memory starting at 0x200000 (2GB / 4KB = 524,288 pages)
-allocator.init(0x200000, 2 * 1024 * 1024 * 1024);
+##### 4. **`tlsf`**
 
-// Allocate 10 contiguous pages (alignment requirement = page size)
-let page_addr = allocator.alloc_pages(10, PAGE_SIZE).expect("页分配失败");
-assert!(page_addr % PAGE_SIZE == 0);  // Ensure page-aligned address
+- **作用**：启用基于 TLSF（Two-Level Segregated Fit）算法的字节粒度内存分配器。
+- **关联模块**：`tlsf.rs`
+- **导出类型**：`TlsfByteAllocator`
+- **功能**：结合多级空闲列表和位图索引，实现高效的内存分配与回收，尤其适合分配不同大小内存块的场景。
 
-// Deallocate the 10 pages
-allocator.dealloc_pages(page_addr, 10);
-```
+##### 5. **`allocator_api`**
 
-## Feature Support
-- bitmap: Enables Bitmap page allocator (default enables page-alloc-256m)
-- tlsf: Enables TLSF byte allocator
-- slab: Enables Slab byte allocator
-- buddy: Enables Buddy byte allocator
-- allocator_api: Enables standard library Allocator trait integration
+- **作用**：启用与 Rust 标准库内存分配器接口的集成。
+- **关联模块**：`allocator_api` 子模块
+- **导出类型**：`AllocatorRc`
+- **功能**：将自定义字节分配器（`ByteAllocator`）包装为实现 `core::alloc::Allocator` 特征的类型，允许在需要标准分配器接口的场景中使用自定义分配器（如 `Rc`、`Box` 等）。
 
+### Trait
 
-## License
-This project uses a multi-license model. Users may choose one of the following licenses:
+`BaseAllocator`（基础分配器）
+│
+├── `ByteAllocator`（字节粒度分配器）
+│   ├─ 继承自 `BaseAllocator`
+│   ├─ 核心方法：`alloc(Layout)`、`dealloc(NonNull<u8>, Layout)`
+│   └─ 统计方法：`total_bytes()`、`used_bytes()`、`available_bytes()`
+│
+├── `PageAllocator`（页粒度分配器）
+│   ├─ 继承自 `BaseAllocator`
+│   ├─ 常量：`const PAGE_SIZE: usize`（页大小）
+│   ├─ 核心方法：`alloc_pages(num_pages, align_pow2)、dealloc_pages(pos, num_pages)、alloc_pages_at(...)`
+│   └─ 统计方法：`total_pages()、used_pages()、available_pages()`
+│
+└── `IdAllocator`（唯一ID分配器）
+    ├─ 继承自 `BaseAllocator`
+    ├─ 核心方法：`alloc_id(count, align_pow2)、dealloc_id(start_id, count)、alloc_fixed_id(id)`
+    └─ 统计方法：`size()（最大ID数）、used()`（已分配ID数）、`available()`（可用ID数）
 
-GPL-3.0-or-later (GNU General Public License v3.0 or later)
-Apache-2.0 (Apache License 2.0)
-MulanPSL-2.0 (Mulan Permissive Software License, Version 2)
-
-Full license texts are available [LICENSE File](https://github.com/arceos-org/allocator/blob/main/LICENSE)。
+- 错误处理通过 `AllocError` 枚举和 `AllocResult` 类型统一管理，所有分配操作返回 `AllocResult` 类型。按照不同的trait
