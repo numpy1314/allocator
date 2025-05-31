@@ -51,44 +51,38 @@
 
 ### Trait
 
-# BaseAllocator（基础分配器）
-
-## 继承体系
-```mermaid
-classDiagram
-    class BaseAllocator {
-        <<interface>>
-    }
-    
-    class ByteAllocator {
-        + alloc(Layout)
-        + dealloc(NonNull<u8>, Layout)
-        + total_bytes()
-        + used_bytes()
-        + available_bytes()
-    }
-    
-    class PageAllocator {
-        + const PAGE_SIZE: usize
-        + alloc_pages(num_pages, align_pow2)
-        + dealloc_pages(pos, num_pages)
-        + alloc_pages_at(...)
-        + total_pages()
-        + used_pages()
-        + available_pages()
-    }
-    
-    class IdAllocator {
-        + alloc_id(count, align_pow2)
-        + dealloc_id(start_id, count)
-        + alloc_fixed_id(id)
-        + size()
-        + used()
-        + available()
-    }
-    
-    BaseAllocator <|-- ByteAllocator
-    BaseAllocator <|-- PageAllocator
-    BaseAllocator <|-- IdAllocator
-
-- 错误处理通过 `AllocError` 枚举和 `AllocResult` 类型统一管理，所有分配操作返回 `AllocResult` 类型。按照不同的trait
+BaseAllocator（基础分配器）
+│
+├── ByteAllocator（字节粒度分配器）
+│   ├─ 继承自 BaseAllocator
+│   ├─ 核心方法：
+│   │   ├─ alloc(Layout)       # 按内存布局分配字节[3,5](@ref)
+│   │   └─ dealloc(NonNull<u8>, Layout)  # 释放指定布局的字节内存[3,5](@ref)
+│   └─ 统计方法：
+│       ├─ total_bytes()       # 总字节容量
+│       ├─ used_bytes()        # 已使用字节数
+│       └─ available_bytes()   # 剩余可用字节数
+│
+├── PageAllocator（页粒度分配器）
+│   ├─ 继承自 BaseAllocator
+│   ├─ 常量：
+│   │   └─ const PAGE_SIZE: usize  # 页大小（单位：字节）[2](@ref)
+│   ├─ 核心方法：
+│   │   ├─ alloc_pages(num_pages, align_pow2)    # 分配指定页数（按对齐要求）[2](@ref)
+│   │   ├─ dealloc_pages(pos, num_pages)         # 释放连续页[2](@ref)
+│   │   └─ alloc_pages_at(...)                   # 在指定地址分配页[2](@ref)
+│   └─ 统计方法：
+│       ├─ total_pages()       # 总页数
+│       ├─ used_pages()        # 已分配页数
+│       └─ available_pages()   # 可用页数
+│
+└── IdAllocator（唯一ID分配器）
+    ├─ 继承自 BaseAllocator
+    ├─ 核心方法：
+    │   ├─ alloc_id(count, align_pow2)    # 分配连续ID（按对齐要求）
+    │   ├─ dealloc_id(start_id, count)    # 释放连续ID
+    │   └─ alloc_fixed_id(id)             # 分配指定固定ID
+    └─ 统计方法：
+        ├─ size()        # 最大可分配ID数
+        ├─ used()        # 已分配ID数
+        └─ available()   # 可用ID数
