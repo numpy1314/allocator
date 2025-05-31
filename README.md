@@ -51,22 +51,44 @@
 
 ### Trait
 
-`BaseAllocator`（基础分配器）
-│
-├── `ByteAllocator`（字节粒度分配器）
-│   ├─ 继承自 `BaseAllocator`
-│   ├─ 核心方法：`alloc(Layout)`、`dealloc(NonNull<u8>, Layout)`
-│   └─ 统计方法：`total_bytes()`、`used_bytes()`、`available_bytes()`
-│
-├── `PageAllocator`（页粒度分配器）
-│   ├─ 继承自 `BaseAllocator`
-│   ├─ 常量：`const PAGE_SIZE: usize`（页大小）
-│   ├─ 核心方法：`alloc_pages(num_pages, align_pow2)、dealloc_pages(pos, num_pages)、alloc_pages_at(...)`
-│   └─ 统计方法：`total_pages()、used_pages()、available_pages()`
-│
-└── `IdAllocator`（唯一ID分配器）
-    ├─ 继承自 `BaseAllocator`
-    ├─ 核心方法：`alloc_id(count, align_pow2)、dealloc_id(start_id, count)、alloc_fixed_id(id)`
-    └─ 统计方法：`size()（最大ID数）、used()`（已分配ID数）、`available()`（可用ID数）
+# BaseAllocator（基础分配器）
+
+## 继承体系
+```mermaid
+classDiagram
+    class BaseAllocator {
+        <<interface>>
+    }
+    
+    class ByteAllocator {
+        + alloc(Layout)
+        + dealloc(NonNull<u8>, Layout)
+        + total_bytes()
+        + used_bytes()
+        + available_bytes()
+    }
+    
+    class PageAllocator {
+        + const PAGE_SIZE: usize
+        + alloc_pages(num_pages, align_pow2)
+        + dealloc_pages(pos, num_pages)
+        + alloc_pages_at(...)
+        + total_pages()
+        + used_pages()
+        + available_pages()
+    }
+    
+    class IdAllocator {
+        + alloc_id(count, align_pow2)
+        + dealloc_id(start_id, count)
+        + alloc_fixed_id(id)
+        + size()
+        + used()
+        + available()
+    }
+    
+    BaseAllocator <|-- ByteAllocator
+    BaseAllocator <|-- PageAllocator
+    BaseAllocator <|-- IdAllocator
 
 - 错误处理通过 `AllocError` 枚举和 `AllocResult` 类型统一管理，所有分配操作返回 `AllocResult` 类型。按照不同的trait
