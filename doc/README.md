@@ -349,7 +349,7 @@ impl BuddyByteAllocator {
 调用 inner.init(start, size) 设置堆的起始地址和大小。此步骤将内存划分为初始块（通常是一个最大阶块），并初始化空闲链表（free lists）。每个阶对应一个链表，存储该阶的空闲块地址。
 示例：若 size = 16KB，初始化为一个 order=3 的块（2 ^ 3 = 8 个页，假设页大小为 4KB）。\
 ​​添加内存 (add_memory 方法)​​：
-通过 inner.add_to_heap(start, start + size) 扩展堆。该函数将新内存区域合并到现有堆中，并尝试与相邻空闲块合并以创建更大阶的块
+通过 inner.add_to_heap(start, start + size) 扩展堆。该函数将新内存区域合并到现有堆中，并尝试与相邻空闲块合并以创建更大阶的块 \
 ![](pic/buddy.png)
 ### 具体分配过程(按字节分配)
 ```rust
@@ -461,5 +461,152 @@ mod tests {
 }
 ```
 ![](pic/test3.png)
+可自行测试，运行命令cargo test --test [对应测试文件名称]
 
 ### slab.rs
+slab的核心是通过封装 slab_allocator::Heap 实现内存管理。分配时，系统查找第一个空闲的 slab，然后从该 slab 中分配一个对象。释放时，系统将对象标记为空闲，以便后续分配。slab 分配器通常用于管理固定大小的对象
+
+```rust
+use super::{AllocError, AllocResult, BaseAllocator, ByteAllocator};
+use core::alloc::Layout;
+use core::ptr::NonNull;
+use slab_allocator::Heap;
+```
+引入slab_allocator库作为底层分配器，定义了Heap结构体，用于管理内存池
+### 具体实现
+SlabByteAllocator 结构体是分配器的入口，内部封装 Heap 实现 slab 分配逻辑。
+```rust
+pub struct SlabByteAllocator {
+    inner: Heap, // 核心 slab 堆
+}
+```
+- init 方法​​
+初始化分配器：调用 Heap::new(start, size) 创建 Slab 内存池，从指定起始地址 start 分配 size 字节。
+- ​add_memory 方法​​
+动态扩展内存池：将新内存区域 (start, size) 加入现有 Slab 池（类似 Linux 中向 Buddy 系统申请新页帧 ）。
+```rust
+impl BaseAllocator for SlabByteAllocator {
+    fn init(&mut self, start: usize, size: usize) {
+        self.inner = unsafe { Some(Heap::new(start, size)) };
+    }
+
+    fn add_memory(&mut self, start: usize, size: usize) -> AllocResult {
+        unsafe { self.inner_mut().add_memory(start, size); }
+        Ok(())
+    }
+}
+```
+- ​​alloc 方法​​
+调用 Heap::allocate(layout) 申请内存（layout 指定大小和对齐）。
+成功时返回 NonNull<u8>（非空指针），失败返回 AllocError::NoMemory。
+​​Slab 优化​​：优先从部分空闲的 Slab 分配对象，减少碎片 。
+
+- ​​dealloc 方法​​
+调用 Heap::deallocate() 释放内存。
+​​Slab 特性​​：释放的对象被标记为空闲，可快速重用（避免重复初始化 ）。
+```rust
+impl ByteAllocator for SlabByteAllocator {
+    fn alloc(&mut self, layout: Layout) -> AllocResult<NonNull<u8>> {
+        self.inner_mut()
+            .allocate(layout)
+            .map(|addr| unsafe { NonNull::new_unchecked(addr as *mut u8) })
+            .map_err(|_| AllocError::NoMemory)
+    }
+
+    fn dealloc(&mut self, pos: NonNull<u8>, layout: Layout) {
+        unsafe { self.inner_mut().deallocate(pos.as_ptr() as usize, layout) }
+    }
+}
+```
+内存统计
+```rust
+fn total_bytes(&self) -> usize {
+    self.inner().total_bytes()  // 内存池总大小
+}
+
+fn used_bytes(&self) -> usize {
+    self.inner().used_bytes()   // 已使用字节数
+}
+
+fn available_bytes(&self) -> usize {
+    self.inner().available_bytes() // 剩余可用字节数
+}
+```
+### example
+以下是一个简单的使用示例以及结果输出
+```rust
+#![feature(allocator_api)]
+#![feature(btreemap_alloc)]
+
+use std::alloc::{Allocator, Layout};
+use allocator::{AllocatorRc, SlabByteAllocator, BaseAllocator};
+
+const POOL_SIZE: usize = 1024 * 1024 * 64; // 64MB内存池
+
+// 创建页面对齐的内存池（返回原始指针和布局）
+fn create_aligned_pool(size: usize, align: usize) -> (*mut u8, Layout) {
+    assert!(align.is_power_of_two(), "对齐值必须是2的幂");
+    let layout = Layout::from_size_align(size, align).expect("无效的内存布局");
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    (ptr, layout)
+}
+
+// 初始化分配器（返回分配器和内存池引用）
+fn setup_allocator() -> (AllocatorRc<SlabByteAllocator>, *mut u8, Layout) {
+    let (ptr, layout) = create_aligned_pool(POOL_SIZE, 4096);
+    let heap_start = ptr as usize;
+    
+    // 验证内存池对齐
+    assert_eq!(
+        heap_start % 4096, 0,
+        "内存池未对齐: 地址0x{:X}, 偏移量{}",
+        heap_start, heap_start % 4096
+    );
+    
+    // 初始化Slab分配器
+    let mut slab_alloc = SlabByteAllocator::new();
+    unsafe {
+        slab_alloc.init(heap_start, POOL_SIZE);
+    }
+    
+    // 创建分配器Rc封装
+    let alloc = AllocatorRc::new(slab_alloc, unsafe {
+        std::slice::from_raw_parts_mut(ptr, POOL_SIZE)
+    });
+    
+    (alloc, ptr, layout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    // 1. 基本分配测试
+    #[test]
+    fn test_basic_allocation() {
+        let (alloc, ptr, layout) = setup_allocator();
+        
+        // 测试分配
+        let test_layout = Layout::new::<u32>();
+        let test_ptr = alloc.allocate(test_layout).expect("分配失败");
+        
+        // 写入并验证数据
+        unsafe {
+            *(test_ptr.as_ptr() as *mut u32) = 0xDEADBEEF;
+            assert_eq!(*(test_ptr.as_ptr() as *mut u32), 0xDEADBEEF, "数据验证失败");
+        }
+        
+        // 释放测试内存
+        unsafe {
+            alloc.deallocate(test_ptr.cast(), test_layout);
+        }
+        
+        // 释放内存池（测试结束后）
+        unsafe {
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+}
+```
+![](pic/test4.png)
+可自行测试，运行命令cargo test --test [对应测试文件名称]
