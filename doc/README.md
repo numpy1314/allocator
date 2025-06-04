@@ -615,4 +615,177 @@ mod tests {
 ### tlsf.rs
 两级隔离适配 (TLSF) 算法是一种实时内存分配器，它以两级隔离列表结构维护空闲内存块。TLSF 算法通过使用一级索引 (FLI) 和二级索引 (SLI) 将空闲内存块按大小分类，从而实现确定性的 O(1) 分配和释放性能。
 ```rust
+use super::{AllocError, AllocResult, BaseAllocator, ByteAllocator};
 use core::alloc::Layout;
+use core::ptr::NonNull;
+use rlsf::Tlsf;
+```
+引入rlsf库作为底层分配器，定义了Tlsf结构体，用于管理内存池
+### 具体实现
+TlsfByteAllocator 结构体是分配器的入口，内部封装 Tlsf 实现 TLSF 分配逻辑。
+```rust
+pub struct TlsfByteAllocator {
+    inner: Tlsf<'static, u32, u32, 28, 32>, // 封装 rlsf 的 TLSF 实例
+    total_bytes: usize,                      // 总内存池大小
+    used_bytes: usize,                       // 已分配内存大小
+}
+
+impl TlsfByteAllocator {
+    /// Creates a new empty [`TlsfByteAllocator`].
+    pub const fn new() -> Self {
+        Self {
+            inner: Tlsf::new(),
+            total_bytes: 0,
+            used_bytes: 0,
+        }
+    }
+}
+```
+- inner​​：基于 rlsf::Tlsf 的实例，在这里索引位数固定为 28 和 32，分别表示：
+    - ​​一级索引位数 (FLI)​​：28，支持最大内存块范围 2^28 = 256MB 的粒度划分。
+    - ​二级索引位数 (SLI)​​：32，每个一级区间细分为 32 个子区间，优化碎片管理。
+    - 总共最大内存池大小为 256MB * 32 = 8GB。
+- ​​内存统计​​：total_bytes 和 used_bytes 实时跟踪内存使用情况，复杂度 O(1)
+```rust
+impl BaseAllocator for TlsfByteAllocator {
+    fn init(&mut self, start: usize, size: usize) {
+        unsafe {
+            let pool = core::slice::from_raw_parts_mut(start as *mut u8, size);
+            self.inner
+                .insert_free_block_ptr(NonNull::new(pool).unwrap())
+                .unwrap();
+        }
+        self.total_bytes = size;
+    }
+
+    fn add_memory(&mut self, start: usize, size: usize) -> AllocResult {
+        unsafe {
+            let pool = core::slice::from_raw_parts_mut(start as *mut u8, size);
+            self.inner
+                .insert_free_block_ptr(NonNull::new(pool).unwrap())
+                .ok_or(AllocError::InvalidParam)?;
+        }
+        self.total_bytes += size;
+        Ok(())
+    }
+}
+```
+- ​​init 方法​​ \
+将物理地址 start 到 start+size 的内存区域转换为字节切片。
+调用 insert_free_block_ptr 将该区域作为​​空闲块​​插入 TLSF 管理的空闲链表。
+初始化统计信息 total_bytes = size。
+- ​​add_memory 方法​​ \
+支持运行时添加非连续内存区域，若插入失败（如地址无效），返回 AllocError::InvalidParam
+![](pic/tlsf_memory_operation.png)
+```rust
+fn alloc(&mut self, layout: Layout) -> AllocResult<NonNull<u8>> {
+    let ptr = self.inner.allocate(layout).ok_or(AllocError::NoMemory)?;
+    self.used_bytes += layout.size();
+    Ok(ptr)
+}
+
+fn dealloc(&mut self, pos: NonNull<u8>, layout: Layout) {
+    unsafe { self.inner.deallocate(pos, layout.align()) }
+    self.used_bytes -= layout.size();
+}
+```
+- 内存分配​​ \
+self.inner.allocate(layout) 调用 TLSF 算法的分配接口
+​​计算索引​​：根据请求大小 layout.size() 计算两级索引（FLI 和 SLI），查找空闲块并分配，最后更新 used_bytes 统计。
+- 内存释放​​ \
+self.inner.deallocate(pos, layout.align())：
+​​合并相邻块​​，检查释放块的前后物理相邻块是否空闲，若空闲则合并（减少外部碎片），而后更新 used_bytes 统计。
+```rust
+fn total_bytes(&self) -> usize {
+    self.total_bytes
+}
+
+fn used_bytes(&self) -> usize {
+    self.used_bytes
+}
+
+fn available_bytes(&self) -> usize {
+    self.total_bytes - self.used_bytes
+}
+```
+- 内存统计
+
+### example
+以下是一个简单的使用示例以及结果输出
+```rust
+#![feature(allocator_api)]
+#![feature(btreemap_alloc)]
+
+use std::alloc::{Allocator, Layout};
+use allocator::{AllocatorRc, TlsfByteAllocator, BaseAllocator, ByteAllocator};
+
+const POOL_SIZE: usize = 1024 * 1024 * 64; // 64MB内存池
+
+// 创建页面对齐的内存池
+fn create_aligned_pool(size: usize, align: usize) -> (*mut u8, Layout) {
+    assert!(align.is_power_of_two(), "对齐值必须是2的幂");
+    let layout = Layout::from_size_align(size, align).expect("无效的内存布局");
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    (ptr, layout)
+}
+
+// 初始化TLSF分配器
+fn setup_allocator() -> (AllocatorRc<TlsfByteAllocator>, *mut u8, Layout) {
+    let (ptr, layout) = create_aligned_pool(POOL_SIZE, 4096);
+    let heap_start = ptr as usize;
+    
+    // 验证内存池对齐
+    assert_eq!(
+        heap_start % 4096, 0,
+        "内存池未对齐: 地址0x{:X}, 偏移量{}",
+        heap_start, heap_start % 4096
+    );
+    
+    // 初始化TLSF分配器
+    let mut tlsf_alloc = TlsfByteAllocator::new();
+    tlsf_alloc.init(heap_start, POOL_SIZE);
+    
+    // 创建分配器Rc封装
+    let alloc = AllocatorRc::new(tlsf_alloc, unsafe {
+        std::slice::from_raw_parts_mut(ptr, POOL_SIZE)
+    });
+    
+    (alloc, ptr, layout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    // 1. 基本分配测试
+    #[test]
+    fn test_basic_allocation() {
+        let (alloc, ptr, layout) = setup_allocator();
+        
+        // 测试分配
+        let test_layout = Layout::new::<u32>();
+        let test_ptr = alloc.allocate(test_layout).expect("分配失败");
+        
+        // 写入并验证数据
+        unsafe {
+            *(test_ptr.as_ptr() as *mut u32) = 0xDEADBEEF;
+            assert_eq!(*(test_ptr.as_ptr() as *mut u32), 0xDEADBEEF, "数据验证失败");
+        }
+        
+        // 释放测试内存
+        unsafe {
+            alloc.deallocate(test_ptr.cast(), test_layout);
+        }
+        
+        // 释放内存池（测试结束后）
+        unsafe {
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+}
+```
+![](pic/test5.png) \
+可自行测试，运行命令cargo test --test [对应测试文件名称]
+
+### 总结
+
