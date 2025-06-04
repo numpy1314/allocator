@@ -518,6 +518,7 @@ impl ByteAllocator for SlabByteAllocator {
     }
 }
 ```
+![](pic/slab.png)
 内存统计
 ```rust
 fn total_bytes(&self) -> usize {
@@ -612,6 +613,6 @@ mod tests {
 可自行测试，运行命令cargo test --test [对应测试文件名称]
 
 ### tlsf.rs
-tlsf的核心是通过封装 tlsf::Allocator 实现内存管理。分配时，系统查找第一个可用的内存块，然后从该块中分配一个对象。释放时，系统将对象标记为空闲，以便后续分配。tlsf 分配器通常用于管理不固定大小的对象，具有高效的内存分配和释放性能。
+两级隔离适配 (TLSF) 算法是一种实时内存分配器，它以两级隔离列表结构维护空闲内存块。TLSF 算法通过使用一级索引 (FLI) 和二级索引 (SLI) 将空闲内存块按大小分类，从而实现确定性的 O(1) 分配和释放性能。
 ```rust
 use core::alloc::Layout;
