@@ -460,7 +460,7 @@ mod tests {
     }
 }
 ```
-![](pic/test3.png)
+![](pic/test3.png) \
 可自行测试，运行命令cargo test --test [对应测试文件名称]
 
 ### slab.rs
@@ -608,5 +608,10 @@ mod tests {
     }
 }
 ```
-![](pic/test4.png)
+![](pic/test4.png) \
 可自行测试，运行命令cargo test --test [对应测试文件名称]
+
+### tlsf.rs
+tlsf的核心是通过封装 tlsf::Allocator 实现内存管理。分配时，系统查找第一个可用的内存块，然后从该块中分配一个对象。释放时，系统将对象标记为空闲，以便后续分配。tlsf 分配器通常用于管理不固定大小的对象，具有高效的内存分配和释放性能。
+```rust
+use core::alloc::Layout;
