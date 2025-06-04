@@ -1,6 +1,7 @@
-### 项目概述
+### allocator模块概述
 
 该项目实现了多种内存分配算法，通过统一的接口将这些算法封装起来，方便开发者根据不同的需求选择合适的分配器。项目支持多种特性开关，可根据需要启用不同的分配器。
+- **target中有另一个同名doc文件夹，其中有html文件可以在浏览器交互阅读**
 
 ### 项目结构和模块
 
@@ -9,6 +10,9 @@
 - **`src/buddy.rs`**: 实现了基于伙伴系统的字节粒度内存分配器 `BuddyByteAllocator`。使用 `buddy_system_allocator` 库来管理内存。
 - **`src/slab.rs`**: 实现了基于 slab 分配器的字节粒度内存分配器 `SlabByteAllocator`。使用 `slab_allocator` 库来管理内存。
 - **`src/tlsf.rs`**: 实现了基于 TLSF（Two-Level Segregated Fit）算法的字节粒度内存分配器 `TlsfByteAllocator`。使用 `rlsf` 库来管理内存。
+- **`benches/collections.rs`**: 使用 criterion 库编写的​​内存分配器性能基准测试套件​​，定义了三种内存操作场景，模拟真实应用场景中的内存使用模式：vec_push,vec_rand_free,btree_map，分别对应的是模拟动态数组增长，模拟内存碎片化场景，模拟关联容器操作
+- **`benches/utils/mod.rs`**: 实现了一个简单的​​固定大小内存池​​（MemoryPool），主要用于管理预分配的内存块
+
 
 ### Feature
 
@@ -50,39 +54,9 @@
 - **功能**：将自定义字节分配器（`ByteAllocator`）包装为实现 `core::alloc::Allocator` 特征的类型，允许在需要标准分配器接口的场景中使用自定义分配器（如 `Rc`、`Box` 等）。
 
 ### Trait
+- 基于trait对项目整体结构进行介绍
+![](pic/trait.png)
+![](pic/concrete_implementation.png)
 
-BaseAllocator（基础分配器）
-│
-├── ByteAllocator（字节粒度分配器）
-│   ├─ 继承自 BaseAllocator
-│   ├─ 核心方法：
-│   │   ├─ alloc(Layout)       # 按内存布局分配字节[3,5](@ref)
-│   │   └─ dealloc(NonNull<u8>, Layout)  # 释放指定布局的字节内存[3,5](@ref)
-│   └─ 统计方法：
-│       ├─ total_bytes()       # 总字节容量
-│       ├─ used_bytes()        # 已使用字节数
-│       └─ available_bytes()   # 剩余可用字节数
-│
-├── PageAllocator（页粒度分配器）
-│   ├─ 继承自 BaseAllocator
-│   ├─ 常量：
-│   │   └─ const PAGE_SIZE: usize  # 页大小（单位：字节）[2](@ref)
-│   ├─ 核心方法：
-│   │   ├─ alloc_pages(num_pages, align_pow2)    # 分配指定页数（按对齐要求）[2](@ref)
-│   │   ├─ dealloc_pages(pos, num_pages)         # 释放连续页[2](@ref)
-│   │   └─ alloc_pages_at(...)                   # 在指定地址分配页[2](@ref)
-│   └─ 统计方法：
-│       ├─ total_pages()       # 总页数
-│       ├─ used_pages()        # 已分配页数
-│       └─ available_pages()   # 可用页数
-│
-└── IdAllocator（唯一ID分配器）
-    ├─ 继承自 BaseAllocator
-    ├─ 核心方法：
-    │   ├─ alloc_id(count, align_pow2)    # 分配连续ID（按对齐要求）
-    │   ├─ dealloc_id(start_id, count)    # 释放连续ID
-    │   └─ alloc_fixed_id(id)             # 分配指定固定ID
-    └─ 统计方法：
-        ├─ size()        # 最大可分配ID数
-        ├─ used()        # 已分配ID数
-        └─ available()   # 可用ID数
+### 具体实现
+#### lib.rs
