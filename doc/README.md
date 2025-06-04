@@ -318,4 +318,148 @@ fn test_specific_address_allocation() -> Result<(), AllocError> {
 }
 ```
 ![](pic/test2.png)
-读者可自行测试，运行命令cargo test --test [对应测试文件名称]
+读者可自行测试，运行命令cargo test --test [对应测试文件名称]  
+
+### buddy.rs
+buddy的核心思想是将内存划分为大小为 2^n 的块。分配时，系统查找最小能满足请求的块；如果块过大，则递归分裂为两个大小相等的“伙伴”块。释放时，系统检查相邻伙伴块是否空闲，若空闲则合并为更大的块。这减少了内存碎片并提高了分配效率，在这里buddy提供字节粒度的内存分配
+
+```rust
+use buddy_system_allocator::Heap;
+use core::alloc::Layout;
+use core::ptr::NonNull;
+
+use crate::{AllocError, AllocResult, BaseAllocator, ByteAllocator};
+```
+引入buddy_system_allocator库作为底层分配器，定义了Heap结构体，用于管理内存池
+
+### 具体实现
+BuddyByteAllocator 结构体是分配器的入口，内部封装 Heap<32> 实现伙伴系统逻辑。
+```rust
+pub struct BuddyByteAllocator {
+    inner: Heap<32>, // 核心伙伴系统堆，最大阶数32
+}
+
+impl BuddyByteAllocator {
+    pub const fn new() -> Self {
+        Self { inner: Heap::<32>::new() } // 创建空堆
+    }
+}
+```
+初始化 (init 方法)​​：
+调用 inner.init(start, size) 设置堆的起始地址和大小。此步骤将内存划分为初始块（通常是一个最大阶块），并初始化空闲链表（free lists）。每个阶对应一个链表，存储该阶的空闲块地址。
+示例：若 size = 16KB，初始化为一个 order=3 的块（2 ^ 3 = 8 个页，假设页大小为 4KB）。\
+​​添加内存 (add_memory 方法)​​：
+通过 inner.add_to_heap(start, start + size) 扩展堆。该函数将新内存区域合并到现有堆中，并尝试与相邻空闲块合并以创建更大阶的块
+![](pic/buddy.png)
+### 具体分配过程(按字节分配)
+```rust
+impl ByteAllocator for BuddyByteAllocator {
+    fn alloc(&mut self, layout: Layout) -> AllocResult<NonNull<u8>> {
+        self.inner.alloc(layout).map_err(|_| AllocError::NoMemory)
+    }
+
+    fn dealloc(&mut self, pos: NonNull<u8>, layout: Layout) {
+        self.inner.dealloc(pos, layout)
+    }
+
+    fn total_bytes(&self) -> usize {
+        self.inner.stats_total_bytes()
+    }
+
+    fn used_bytes(&self) -> usize {
+        self.inner.stats_alloc_actual()
+    }
+
+    fn available_bytes(&self) -> usize {
+        self.inner.stats_total_bytes() - self.inner.stats_alloc_actual()
+    }
+}
+```
+#### alloc
+​​计算所需阶数​​：
+根据 layout.size 计算最小满足的阶 k \
+​​查找空闲块​​：
+从阶 k 开始搜索空闲链表（free list）。若找到，直接分配并标记为已用。 \
+​​分裂机制​​：
+若当前阶无空闲块，向上搜索更高阶。找到后分裂为两个伙伴块：一个分配，另一个加入低阶链表。 \
+​​分配失败​​：
+若所有阶均无空闲块，返回 AllocError::NoMemory。
+
+#### dealloc
+标记为空闲​​：将块加入对应阶的空闲链表。 \
+​​伙伴检查​​：计算伙伴块地址（公式：若块地址为 p，阶为 k，则伙伴地址为 p⊕2  ^ k
+ ）。
+​​合并机制​​：若伙伴块空闲且同阶，则合并为 order+1 的块，并递归检查更高阶。
+
+#### 内存统计
+```rust
+fn total_bytes(&self) -> usize { self.inner.stats_total_bytes() }
+fn used_bytes(&self) -> usize { self.inner.stats_alloc_actual() }
+fn available_bytes(&self) -> usize { 
+    self.inner.stats_total_bytes() - self.inner.stats_alloc_actual()
+}
+```
+### example
+以下是一个简单的使用示例以及结果输出
+```rust
+extern crate alloc;
+
+use alloc::boxed::Box;
+use allocator::BuddyByteAllocator;
+use core::alloc::Layout;
+use allocator::ByteAllocator;
+use allocator::BaseAllocator;
+
+// 创建堆内存池（避免栈溢出）
+fn create_test_pool(size: usize) -> Box<[u8]> {
+    vec![0u8; size].into_boxed_slice()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fragmentation_handling() {
+        const HEAP_SIZE: usize = 4 * 1024 * 1024; // 4MB
+        let heap_mem = create_test_pool(HEAP_SIZE);
+        let heap_start = heap_mem.as_ptr() as usize;
+        let mut allocator = BuddyByteAllocator::new();
+        
+        unsafe {
+            allocator.init(heap_start, heap_mem.len());
+        }
+
+        // 分配多个小块（制造碎片）
+        let mut ptrs = Vec::new();
+        let small_layout = Layout::from_size_align(4096, 4096).unwrap(); // 4KB
+        
+        for _ in 0..100 {
+            let ptr = allocator.alloc(small_layout).expect("小块分配失败");
+            ptrs.push(ptr);
+        }
+        
+        // 释放所有奇数索引的块
+        for i in (1..ptrs.len()).step_by(2) {
+            allocator.dealloc(ptrs[i], small_layout);
+        }
+        
+        // 尝试分配大块（应能利用碎片合并）
+        let large_size = 1024 * 1024; // 1MB
+        let large_layout = Layout::from_size_align(large_size, large_size).unwrap();
+        assert!(
+            allocator.alloc(large_layout).is_ok(),
+            "应能利用碎片分配{}字节大块",
+            large_size
+        );
+        
+        // 清理剩余内存
+        for i in (0..ptrs.len()).step_by(2) {
+            allocator.dealloc(ptrs[i], small_layout);
+        }
+    }
+}
+```
+![](pic/test3.png)
+
+### slab.rs
