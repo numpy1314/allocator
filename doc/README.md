@@ -55,8 +55,267 @@
 
 ### Trait
 - 基于trait对项目整体结构进行介绍
+
 ![](pic/trait.png)
 ![](pic/concrete_implementation.png)
 
 ### 具体实现
-#### lib.rs
+### lib.rs
+### 1.分配器架构实现
+采取分层结构设计，先定义基础层(BaseAllocator)，再按照具体分配需求设计专用层ByteAllocator：字节级内存分配（如 Buddy/Slab 算法）
+PageAllocator：页级内存分配（如 Bitmap 算法）
+IdAllocator：唯一 ID 分配（如线程 ID）
+最后通过模块化实现用特性开关启用具体算法实现
+```rust
+#[cfg(feature = "buddy")]
+mod buddy;
+pub use buddy::BuddyByteAllocator;
+```
+### 2.核心特性实现
+- **`ByteAllocator`**:
+```rust
+fn alloc(&mut self, layout: Layout) -> AllocResult<NonNull<u8>>;
+fn dealloc(&mut self, pos: NonNull<u8>, layout: Layout);
+```
+通过 Layout 结构体接收分配请求的尺寸和对齐要求，返回分配的内存地址或错误信息。
+- **`PageAllocator`**:
+```rust
+const PAGE_SIZE: usize;
+fn alloc(&mut self, layout: Layout) -> AllocResult<NonNull<u8>>;
+```
+必须指定页面大小，除此之外，align_pow2要求对其到2的幂次地址，最后通过used_pages返回已分配的页数管理物理页
+- **`IdAllocator`**:
+```rust
+/// Whether the given `id` was allocated.
+    fn is_allocated(&self, id: usize) -> bool;
+
+    /// Mark the given `id` has been allocated and cannot be reallocated.
+    fn alloc_fixed_id(&mut self, id: usize) -> AllocResult;
+            
+```
+提供了ID状态查询，并确保不会再分配相同的ID
+
+### 3.辅助的工具函数
+- **地址对齐**:
+```rust
+#[inline]
+const fn align_down(pos: usize, align: usize) -> usize {
+    pos & !(align - 1)
+}
+
+#[inline]
+const fn align_up(pos: usize, align: usize) -> usize {
+    (pos + align - 1) & !(align - 1)
+}
+```
+### 4.错误处理机制
+``` rust
+pub enum AllocError {
+    InvalidParam,    // 参数不合法（如未对齐）
+    MemoryOverlap,   // 内存区域重叠
+    NoMemory,        // 内存不足
+    NotAllocated,    // 释放未分配区域
+}
+```
+
+### bitmap.rs
+```rust
+use bitmap_allocator::BitAlloc; // 引入位图分配器库作为底层分配器
+```
+### 根据编译特性采取不同的分配器实现
+```rust
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        /// Use 4GB memory for testing.
+        type BitAllocUsed = bitmap_allocator::BitAlloc1M;
+    } else if #[cfg(feature = "page-alloc-1t")] {
+        /// Support max 256M * PAGE_SIZE = 1TB memory (assume that PAGE_SIZE = 4KB).
+        type BitAllocUsed = bitmap_allocator::BitAlloc256M;
+    } else if #[cfg(feature = "page-alloc-64g")] {
+        /// Support max 16M * PAGE_SIZE = 64GB memory (assume that PAGE_SIZE = 4KB).
+        type BitAllocUsed = bitmap_allocator::BitAlloc16M;
+    } else if #[cfg(feature = "page-alloc-4g")] {
+        /// Support max 1M * PAGE_SIZE = 4GB memory (assume that PAGE_SIZE = 4KB).
+        type BitAllocUsed = bitmap_allocator::BitAlloc1M;
+    } else {// #[cfg(feature = "page-alloc-256m")]
+        /// Support max 64K * PAGE_SIZE = 256MB memory (assume that PAGE_SIZE = 4KB).
+        type BitAllocUsed = bitmap_allocator::BitAlloc64K;
+    }
+}
+```
+![](pic/bitmap.png)
+
+### 初始化一个分配器
+```rust
+pub struct BitmapPageAllocator<const PAGE_SIZE: usize> {
+    base: usize,
+    total_pages: usize,
+    used_pages: usize,
+    inner: BitAllocUsed,
+}
+
+impl<const PAGE_SIZE: usize> BitmapPageAllocator<PAGE_SIZE> {
+    /// Creates a new empty `BitmapPageAllocator`.
+    pub const fn new() -> Self {
+        Self {
+            base: 0,
+            total_pages: 0,
+            used_pages: 0,
+            inner: BitAllocUsed::DEFAULT,
+        }
+    }
+}
+```
+
+### 具体分配过程（一般分配）
+```rust
+fn alloc_pages(&mut self, num_pages: usize, align_pow2: usize) -> AllocResult<usize> {
+    // Check if the alignment is valid.
+    if align_pow2 > MAX_ALIGN_1GB || !crate::is_aligned(align_pow2, PAGE_SIZE) {
+        return Err(AllocError::InvalidParam);
+    }
+    let align_pow2 = align_pow2 / PAGE_SIZE;
+    if !align_pow2.is_power_of_two() {
+        return Err(AllocError::InvalidParam);
+    }
+    let align_log2 = align_pow2.trailing_zeros() as usize;
+    match num_pages.cmp(&1) {
+        core::cmp::Ordering::Equal => self.inner.alloc().map(|idx| idx * PAGE_SIZE + self.base),
+        core::cmp::Ordering::Greater => self
+            .inner
+            .alloc_contiguous(None, num_pages, align_log2)
+            .map(|idx| idx * PAGE_SIZE + self.base),
+        _ => return Err(AllocError::InvalidParam),
+    }
+    .ok_or(AllocError::NoMemory)
+    .inspect(|_| self.used_pages += num_pages)
+}
+```
+如果超出上限，或不是页大小的整数倍，返回错误信息；否则进行下一步验证：转换为页大小的整数倍，检查是否是2的幂次，计算对齐的log2值，调用alloc_contiguous进行分配，返回分配的地址。
+### 具体分配过程（指定分配地址）
+```rust
+/// Allocate pages at a specific address.
+fn alloc_pages_at(
+    &mut self,
+    base: usize,
+    num_pages: usize,
+    align_pow2: usize,
+) -> AllocResult<usize> {
+    // Check if the alignment is valid,
+    // and the base address is aligned to the given alignment.
+    if align_pow2 > MAX_ALIGN_1GB
+        || !crate::is_aligned(align_pow2, PAGE_SIZE)
+        || !crate::is_aligned(base, align_pow2)
+    {
+        return Err(AllocError::InvalidParam);
+    }
+
+    let align_pow2 = align_pow2 / PAGE_SIZE;
+    if !align_pow2.is_power_of_two() {
+        return Err(AllocError::InvalidParam);
+    }
+    let align_log2 = align_pow2.trailing_zeros() as usize;
+
+    let idx = (base - self.base) / PAGE_SIZE;
+
+    self.inner
+        .alloc_contiguous(Some(idx), num_pages, align_log2)
+        .map(|idx| idx * PAGE_SIZE + self.base)
+        .ok_or(AllocError::NoMemory)
+        .inspect(|_| self.used_pages += num_pages)
+}
+```
+相比于一般分配，多了一个基址base的检查
+![](pic/bitmap_allocate.png)
+
+### 释放部分
+```rust
+fn dealloc_pages(&mut self, pos: usize, num_pages: usize) {
+    assert!(
+        crate::is_aligned(pos, Self::PAGE_SIZE),
+        "pos must be aligned to PAGE_SIZE"
+    );
+    if match num_pages.cmp(&1) {
+        core::cmp::Ordering::Equal => self.inner.dealloc((pos - self.base) / PAGE_SIZE),
+        core::cmp::Ordering::Greater => self
+            .inner
+            .dealloc_contiguous((pos - self.base) / PAGE_SIZE, num_pages),
+        _ => false,
+    } {
+        self.used_pages -= num_pages;
+    }
+}
+```
+检查一下目标地址是否对齐，然后调用dealloc_contiguous进行释放
+
+### example
+```rust
+// 单页分配的样例
+use allocator::{BaseAllocator, PageAllocator, BitmapPageAllocator, AllocError};
+
+const PAGE_SIZE: usize = 4096;
+
+#[test] 
+fn test_page_allocation() -> Result<(), AllocError> {
+    let mut allocator = BitmapPageAllocator::<PAGE_SIZE>::new();
+    allocator.init(0x1000, PAGE_SIZE);
+    
+    let addr = allocator.alloc_pages(1, PAGE_SIZE)?;
+    println!("Allocated page at: 0x{:X}", addr);
+    
+    allocator.dealloc_pages(addr, 1);
+    Ok(())
+}
+```
+![](pic/test1.png)
+```rust
+// 多页分配的样例
+use allocator::{BaseAllocator, PageAllocator, BitmapPageAllocator, AllocError};
+
+const PAGE_SIZE: usize = 4096; // 4KB页大小
+const MEM_BASE: usize = 0x1000; // 内存池起始地址
+const MEM_SIZE: usize = 8 * 1024 * 1024; // 8MB内存池
+
+#[test]
+fn test_multi_page_allocation() -> Result<(), AllocError> {
+    let mut allocator = BitmapPageAllocator::<PAGE_SIZE>::new();
+    allocator.init(MEM_BASE, MEM_SIZE);
+    
+    // 分配连续4页（16KB）
+    let num_pages = 4;
+    let addr = allocator.alloc_pages(num_pages, PAGE_SIZE)?;
+    println!("[多页分配] 起始地址: 0x{:X}, 页数: {}", addr, num_pages);
+    
+    // 验证地址对齐和连续性
+    assert!(addr % PAGE_SIZE == 0, "地址未对齐");
+    assert!(addr >= MEM_BASE && addr < MEM_BASE + MEM_SIZE, "地址越界");
+    
+    allocator.dealloc_pages(addr, num_pages);
+    Ok(())
+}
+
+#[test]
+fn test_specific_address_allocation() -> Result<(), AllocError> {
+    let mut allocator = BitmapPageAllocator::<PAGE_SIZE>::new();
+    allocator.init(MEM_BASE, MEM_SIZE);
+    
+    // 确保地址满足2MB对齐（关键修正）
+    let align = 2 * 1024 * 1024; // 2MB对齐
+    let target_addr = (MEM_BASE + align - 1) & !(align - 1); // 对齐到最近的2MB边界
+    
+    let num_pages = 2;
+    
+    // 在指定地址分配2页
+    let addr = allocator.alloc_pages_at(target_addr, num_pages, align)?;
+    println!("[指定地址分配] 请求地址: 0x{:X}, 实际地址: 0x{:X}", target_addr, addr);
+    
+    // 验证地址精确匹配
+    assert_eq!(addr, target_addr, "分配地址与请求不匹配");
+    assert!(addr % align == 0, "地址未满足对齐要求");
+    
+    allocator.dealloc_pages(addr, num_pages);
+    Ok(())
+}
+```
+![](pic/test2.png)
+读者可自行测试，运行命令cargo test --test [对应测试文件名称]
