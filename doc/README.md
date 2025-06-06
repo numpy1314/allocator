@@ -4,6 +4,46 @@
 - **target中有另一个同名doc文件夹，其中有html文件可以在浏览器交互阅读**
 
 ### 项目结构和模块
+.
+├── benches
+│   ├── collections.rs
+│   └── utils
+│       └── mod.rs
+├── Cargo.lock
+├── Cargo.toml
+├── doc
+│   ├── pic
+│   │   ├── bitmap_allocate.png
+│   │   ├── bitmap.png
+│   │   ├── buddy.png
+│   │   ├── concrete_implementation.png
+│   │   ├── slab.png
+│   │   ├── test1.png
+│   │   ├── test2.png
+│   │   ├── test3.png
+│   │   ├── test4.png
+│   │   ├── test5.png
+│   │   ├── tlsf_memory_operation.png
+│   │   └── trait.png
+│   └── README.md
+├── LICENSE
+├── LICENSE-Apache-2.0
+├── LICENSE-GPL-3.0-or-later
+├── output.md
+├── src
+│   ├── bitmap.rs
+│   ├── buddy.rs
+│   ├── lib.rs
+│   ├── slab.rs
+│   └── tlsf.rs
+└── tests
+    ├── allocator.rs
+    ├── test1.rs
+    ├── test2.rs
+    ├── test3.rs
+    ├── test4.rs
+    └── test5.rs
+
 
 - **`src/lib.rs`**: 项目的核心文件，定义了统一的分配器接口，包括`BaseAllocator`、字节粒度分配器、页粒度分配器和唯一 ID 分配器的接口。同时，提供了一些辅助函数，如地址对齐和检查对齐的函数。此外，还实现了 `AllocatorRc` 结构体，用于将字节分配器包装成 `core::alloc::Allocator` 类型。
 - **`src/bitmap.rs`**: 实现了基于位图的页粒度内存分配器 `BitmapPageAllocator`。使用位图来跟踪每个页面的分配状态，支持不同大小的内存范围。
