@@ -828,5 +828,13 @@ mod tests {
 ```
 可自行测试，运行命令cargo test --test [对应测试文件名称]
 
-### 总结
-本模块主要实现了四种内存分配器，在tests/allocator.rs中进行了集成测试
+### 补充说明
+本模块主要实现了四种内存分配器，在tests/allocator.rs中进行了集成测试，其中包括了
+- test_vec（进行连续分配测试）
+- test_vec2（分配大量小向量然后以随机顺序释放进行碎片测试）
+- test_btree_map（模拟复杂的分配释放场景）
+- test_alignment（测试对齐分配）
+
+运行命令 cargo test --test allocator 即可进行测试
+
+除此之外，还提供了性能测试展示，运行cargo benche即可
