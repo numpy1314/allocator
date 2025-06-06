@@ -250,6 +250,7 @@ fn dealloc_pages(&mut self, pos: usize, num_pages: usize) {
 
 ### example
 ```rust
+// test1.rs
 // 单页分配的样例
 use allocator::{BaseAllocator, PageAllocator, BitmapPageAllocator, AllocError};
 
@@ -267,8 +268,8 @@ fn test_page_allocation() -> Result<(), AllocError> {
     Ok(())
 }
 ```
-![](pic/test1.png)
 ```rust
+// test2.rs
 // 多页分配的样例
 use allocator::{BaseAllocator, PageAllocator, BitmapPageAllocator, AllocError};
 
@@ -317,7 +318,6 @@ fn test_specific_address_allocation() -> Result<(), AllocError> {
     Ok(())
 }
 ```
-![](pic/test2.png)
 读者可自行测试，运行命令cargo test --test [对应测试文件名称]  
 
 ### buddy.rs
@@ -402,6 +402,7 @@ fn available_bytes(&self) -> usize {
 ### example
 以下是一个简单的使用示例以及结果输出
 ```rust
+// test3.rs
 extern crate alloc;
 
 use alloc::boxed::Box;
@@ -460,7 +461,6 @@ mod tests {
     }
 }
 ```
-![](pic/test3.png) \
 可自行测试，运行命令cargo test --test [对应测试文件名称]
 
 ### slab.rs
@@ -536,6 +536,7 @@ fn available_bytes(&self) -> usize {
 ### example
 以下是一个简单的使用示例以及结果输出
 ```rust
+// test4.rs
 #![feature(allocator_api)]
 #![feature(btreemap_alloc)]
 
@@ -609,7 +610,6 @@ mod tests {
     }
 }
 ```
-![](pic/test4.png) \
 可自行测试，运行命令cargo test --test [对应测试文件名称]
 
 ### tlsf.rs
@@ -713,6 +713,7 @@ fn available_bytes(&self) -> usize {
 ### example
 以下是一个简单的使用示例以及结果输出
 ```rust
+// test5.rs
 #![feature(allocator_api)]
 #![feature(btreemap_alloc)]
 
@@ -784,8 +785,7 @@ mod tests {
     }
 }
 ```
-![](pic/test5.png) \
 可自行测试，运行命令cargo test --test [对应测试文件名称]
 
 ### 总结
-
+本模块主要实现了四种内存分配器，在tests/allocator.rs中进行了集成测试
