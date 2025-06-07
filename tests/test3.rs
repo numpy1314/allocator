@@ -6,7 +6,7 @@ use core::alloc::Layout;
 use allocator::ByteAllocator;
 use allocator::BaseAllocator;
 
-// 创建堆内存池（避免栈溢出）
+// Create a heap memory pool (to avoid stack overflow)
 fn create_test_pool(size: usize) -> Box<[u8]> {
     vec![0u8; size].into_boxed_slice()
 }
@@ -26,30 +26,30 @@ mod tests {
             allocator.init(heap_start, heap_mem.len());
         }
 
-        // 分配多个小块（制造碎片）
+        // Allocate multiple small blocks (to create fragmentation)
         let mut ptrs = Vec::new();
         let small_layout = Layout::from_size_align(4096, 4096).unwrap(); // 4KB
         
         for _ in 0..100 {
-            let ptr = allocator.alloc(small_layout).expect("小块分配失败");
+            let ptr = allocator.alloc(small_layout).expect("Failed to allocate small block");
             ptrs.push(ptr);
         }
         
-        // 释放所有奇数索引的块
+        // Free all blocks at odd indices
         for i in (1..ptrs.len()).step_by(2) {
             allocator.dealloc(ptrs[i], small_layout);
         }
         
-        // 尝试分配大块（应能利用碎片合并）
+        // Try to allocate a large block (should be able to utilize merged fragments)
         let large_size = 1024 * 1024; // 1MB
         let large_layout = Layout::from_size_align(large_size, large_size).unwrap();
         assert!(
             allocator.alloc(large_layout).is_ok(),
-            "应能利用碎片分配{}字节大块",
+            "Should be able to allocate a {} - byte large block using fragments",
             large_size
         );
         
-        // 清理剩余内存
+        // Clean up the remaining memory
         for i in (0..ptrs.len()).step_by(2) {
             allocator.dealloc(ptrs[i], small_layout);
         }
