@@ -91,7 +91,7 @@ mod tests {
         }
         
         // 释放所有奇数索引的对象
-        for (i, block) in allocations.iter_mut().enumerate().filter(|(i, _)| i % 2 == 1) {
+        for (_, block) in allocations.iter_mut().enumerate().filter(|(i, _)| i % 2 == 1) {
             unsafe {
                 // 转换为NonNull<u8>进行释放
                 alloc.deallocate(
@@ -176,7 +176,7 @@ mod tests {
         }
         
         // 释放部分内存
-        for (i, (block, layout)) in allocations.iter().enumerate().filter(|(i, _)| i % 3 == 0) {
+        for (_, (block, layout)) in allocations.iter().enumerate().filter(|(i, _)| i % 3 == 0) {
             unsafe {
                 alloc.deallocate(NonNull::new(block.as_ptr() as *mut u8).unwrap(), *layout);
             }
@@ -188,7 +188,7 @@ mod tests {
         assert!(result.is_err(), "Allocation of impossible size succeeded");
         
         // 清理
-        for (i, (block, layout)) in allocations.iter().enumerate().filter(|(i, _)| i % 3 != 0) {
+        for (_, (block, layout)) in allocations.iter().enumerate().filter(|(i, _)| i % 3 != 0) {
             unsafe {
                 alloc.deallocate(NonNull::new(block.as_ptr() as *mut u8).unwrap(), *layout);
             }
