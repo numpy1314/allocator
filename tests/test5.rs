@@ -68,4 +68,74 @@ mod tests {
             std::alloc::dealloc(ptr, layout);
         }
     }
+
+    // Fragmentation test
+    #[test]
+    fn fragmentation_resistance() {
+        let (alloc, ptr, layout) = setup_allocator();
+        
+        // Phase 1: Allocate various size blocks
+        let mut blocks = vec![];
+        for i in 0..100 {
+            let size = if i % 3 == 0 {
+                32
+            } else if i % 3 == 1 {
+                64
+            } else {
+                128
+            };
+            
+            let alloc_layout = Layout::from_size_align(size, 8).unwrap();
+            let block = alloc.allocate(alloc_layout).expect("Allocation failed");
+            blocks.push((block, alloc_layout, i));
+        }
+        
+        // Phase 2: Free some blocks to create fragmentation
+        blocks.retain(|(_, _, i)| !(i % 5 == 0 || i % 5 == 2));
+        
+        // Phase 3: Try to allocate large block
+        let large_layout = Layout::from_size_align(8192, 8).unwrap();
+        let large_block = alloc.allocate(large_layout);
+        assert!(large_block.is_ok(), "Failed to allocate large block despite fragmentation");
+        
+        if let Ok(block) = large_block {
+            unsafe { alloc.deallocate(block.cast(), large_layout) };
+        }
+        
+        // Cleanup remaining blocks
+        for (block, alloc_layout, _) in blocks {
+            unsafe { alloc.deallocate(block.cast(), alloc_layout) };
+        }
+        
+        unsafe {
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+    
+    // Alignment test
+    #[test]
+    fn alignment_handling() {
+        let (alloc, ptr, layout) = setup_allocator();
+        
+        for align_exp in 4..=12 {
+            let align = 1 << align_exp; // 16, 32, ... 4096
+            let test_layout = Layout::from_size_align(64, align).unwrap();
+            
+            let block = alloc.allocate(test_layout).expect("Alignment allocation failed");
+            let addr = block.as_ptr() as *mut u8 as usize;
+            
+            assert_eq!(
+                addr % align,
+                0,
+                "Misaligned block: address {:#x} not aligned to {}",
+                addr, align
+            );
+            
+            unsafe { alloc.deallocate(block.cast(), test_layout) };
+        }
+        
+        unsafe {
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
 }
